@@ -1,48 +1,43 @@
 
+use zcr_wsn::config::{AREA_HEIGHT, AREA_WIDTH, CH_PROBABILITY, NUM_NODES};
+use zcr_wsn::leach::LEACH;
+use zcr_wsn::simulator::SIMULATOR;
 use macroquad::prelude::*;
-use zcr_wsn::{config::SENSOR_RADIUS, node::Node};
+
+const SIM_FPS: f32 = 10.0; // simulation steps per second
 
 
-struct SIMULATOR{
-    wsn: Vec<Node>,
-    round: usize,
-    alive_count: usize
+fn window_conf() -> Conf {
+    Conf {
+        window_title: "WSN Simulator".to_owned(),
+        window_width: 1200,
+        window_height: 720,
+        fullscreen: false,
+        ..Default::default()
+    }
 }
 
-impl SIMULATOR{
-
-    fn new(width: f32, height: f32, n_nodes: usize) -> Self{
-        let wsn = Node::create_wsn(width, height, n_nodes);
-        
-        Self{
-            wsn,
-            round:0,
-            alive_count:n_nodes
-            
-        }
-    }
-
-    fn render(self){
-        for node in self.wsn.iter(){
-            let color: Color = if node.is_alive {
-                BEIGE
-            }else{
-                RED
-            };
-
-            draw_circle(node.position.x, node.position.y,SENSOR_RADIUS,color);
-        }
-
-    }
-
-
-}
-
-#[macroquad::main("WSN")]
+#[macroquad::main(window_conf)]
 async fn main() {
-    loop{
+    let mut simulator = SIMULATOR::new(AREA_WIDTH, AREA_HEIGHT, NUM_NODES);
+    let mut protocol = LEACH::new(CH_PROBABILITY);
+
+    let mut acc = 0.0;
+    let step = 1.0 / SIM_FPS;
+
+    loop {
+        let dt = get_frame_time();
+        acc += dt;
+
+        while acc >= step {
+            simulator.update(&mut protocol);
+            acc -= step;
+        }
+
         clear_background(BLACK);
-        draw_text("WSN", screen_width()/2.0, screen_height()/2.0, 100.0, WHITE);
-        next_frame().await
-    }    
+        simulator.render();
+
+        next_frame().await;
+    }
 }
+
