@@ -4,3 +4,4 @@ pub mod utils;
 pub mod leach;
 pub mod simulator;
 pub mod clustering;
+pub mod zcr;
