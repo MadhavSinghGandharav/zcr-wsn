@@ -1,107 +1,144 @@
 
-use crate::config::PACKET_SIZE;
-use crate::simulator::{Protocol,SIMULATOR};
+use crate::config::DATA_PACKET_SIZE_BITS;
+use crate::simulator::{Protocol, Simulator};
 use crate::utils::*;
-use rand::Rng; 
+use rand::Rng;
 use crate::node::Node;
 
-pub struct LEACH{
-    threshold: f32,
-    ch_probability: f32,
-    cycle_length: usize,
+/// Implementation of the LEACH (Low-Energy Adaptive Clustering Hierarchy) protocol.
+///
+/// This is a simplified version commonly used in simulations:
+/// - Cluster heads are selected probabilistically with rotation.
+/// - Non-CH nodes join the nearest CH and deduct transmission energy to it.
+/// - CHs deduct energy for receiving from members, aggregating data,
+///   and transmitting one aggregated packet to the base station.
+pub struct Leach {
+    /// Current election threshold T(n) — updated each round
+    election_threshold: f32,
+
+    /// Desired cluster head probability 'p'
+    cluster_head_probability: f32,
+
+    /// Length of one full rotation cycle (1/p rounds on average)
+    cycle_length_rounds: usize,
 }
 
-impl LEACH {
-    pub fn new(probability: f32) -> Self{
-
-        Self{
-            ch_probability: probability,
-            threshold: 0.0, // dummy value
-            cycle_length: (1.0/probability) as usize
+impl Leach {
+    /// Creates a new LEACH instance with the given cluster head probability.
+    pub fn new(cluster_head_probability: f32) -> Self {
+        Self {
+            election_threshold: 0.0, // will be updated in first round
+            cluster_head_probability,
+            cycle_length_rounds: (1.0 / cluster_head_probability) as usize,
         }
     }
 
-    fn update_threshold(&mut self, round: usize){
-
-        let r_mod = (round % self.cycle_length) as f32;
-        let denom = 1.0 - self.ch_probability * r_mod;
-        self.threshold = (self.ch_probability / denom).min(1.0);
+    /// Updates the cluster head election threshold T(n) for the current round
+    /// according to the standard LEACH formula.
+    fn update_election_threshold(&mut self, current_round: usize) {
+        let r_mod = (current_round % self.cycle_length_rounds) as f32;
+        let denom = 1.0 - self.cluster_head_probability * r_mod;
+        // Avoid division by zero / negative (though denom should stay > 0)
+        self.election_threshold = (self.cluster_head_probability / denom).min(1.0);
     }
 
-    fn form_cluster(wsn: &mut Vec<Node>, cluster_heads: &Vec<usize>){
+    /// Assigns alive non-CH nodes to the nearest cluster head,
+    /// deducts transmission energy from members (to their CH),
+    /// and registers members on the CH nodes.
+    ///
+    /// This represents the phase where nodes send data to their CH
+    /// (join cost is often considered negligible or merged here).
+    fn form_clusters(nodes: &mut Vec<Node>, cluster_head_ids: &Vec<usize>) {
+        for node_id in 0..nodes.len() {
+            
+            if nodes[node_id].is_alive && !nodes[node_id].is_cluster_head {
+                let mut min_distance_m = f32::INFINITY;
+                let mut nearest_ch_id: Option<usize> = None;
 
-        for n_id in 0..wsn.len(){
-            if (wsn[n_id].is_alive) && (!wsn[n_id].is_cluster_head){
-
-                let mut min_dist = f32::INFINITY;
-                let mut nearest_ch: Option<usize> = None;
-
-                for &ch_id in cluster_heads {
-                    let dist = (wsn[n_id].position - wsn[ch_id].position).length();
-                    if dist < min_dist {
-                        min_dist = dist;
-                        nearest_ch = Some(ch_id);
+                for &ch_id in cluster_head_ids {
+                    let distance = (nodes[node_id].position - nodes[ch_id].position).length();
+                    if distance < min_distance_m {
+                        min_distance_m = distance;
+                        nearest_ch_id = Some(ch_id);
                     }
                 }
 
-                if let Some(ch) = nearest_ch{
-                    wsn[n_id].cluster_head_id = nearest_ch;
-                    wsn[ch].cluster_members.push(n_id);
-                    wsn[n_id].res_energy -= transmission_energy(PACKET_SIZE,min_dist);
+                if let Some(ch_id) = nearest_ch_id {
+                    nodes[node_id].cluster_head_id = Some(ch_id);
+                    nodes[ch_id].cluster_member_ids.push(node_id);
+                    nodes[node_id].remaining_energy_j -=
+                        calculate_transmit_energy(DATA_PACKET_SIZE_BITS, min_distance_m);
                 }
             }
         }
     }
 }
 
-impl Protocol for LEACH{
-
+impl Protocol for Leach {
     fn name(&self) -> &'static str {
         "LEACH"
     }
 
-    fn run_round(&mut self, sim: &mut SIMULATOR) {
+    /// Executes one full round of the LEACH protocol.
+    fn run_round(&mut self, simulator: &mut Simulator) {
+        self.update_election_threshold(simulator.current_round);
 
-        self.update_threshold(sim.round);
         let mut rng = rand::rng();
-        let mut cluster_heads: Vec<usize> = Vec::new();
+        let mut selected_cluster_head_ids: Vec<usize> = Vec::new();
 
-        // first pass ( reset , update , select ch)
-        for id in 0..sim.wsn.len(){
-            reset_node(&mut sim.wsn[id]);
-            // reset eligibilty
-            if sim.round % self.cycle_length == 0 {
-                sim.wsn[id].is_eligible = true;
+        // Phase 1: Reset state, handle dead nodes, elect cluster heads
+        for node_id in 0..simulator.nodes.len() {
+            let node = &mut simulator.nodes[node_id];
+
+            reset_node_for_new_round(node);
+
+            // Reset eligibility at the start of each new cycle
+            if simulator.current_round % self.cycle_length_rounds == 0 {
+                node.is_eligible_for_ch = true;
             }
 
-            // update dead nodes
-            if sim.wsn[id].is_alive && sim.wsn[id].res_energy <= 0.0 {
-                sim.wsn[id].is_alive = false;
-                sim.alive_count -= 1;
+            // Mark node dead if energy depleted
+            if node.is_alive && node.remaining_energy_j <= 0.0 {
+                node.is_alive = false;
+                simulator.alive_node_count -= 1;
                 continue;
             }
-            
-            // cluster head selection
-            if (rng.random::<f32>() < self.threshold) && (sim.wsn[id].is_alive && sim.wsn[id].is_eligible) {
-                sim.wsn[id].is_cluster_head = true;
-                sim.wsn[id].is_eligible = false;
-                cluster_heads.push(id);
+
+            // Probabilistic cluster head election
+            if rng.random::<f32>() < self.election_threshold
+                && node.is_alive
+                && node.is_eligible_for_ch
+            {
+                node.is_cluster_head = true;
+                node.is_eligible_for_ch = false;
+                selected_cluster_head_ids.push(node_id);
             }
         }
 
-        // cluster formation and normal node energy dissipation
-        LEACH::form_cluster(&mut sim.wsn,&cluster_heads);
+        // Phase 2: Cluster assignment + member → CH data transmission energy
+        Leach::form_clusters(&mut simulator.nodes, &selected_cluster_head_ids);
 
-        // cluster head energy dissipation
-        for &ch_id in cluster_heads.iter(){
-            if !sim.wsn[ch_id].is_alive{
+        // Phase 3: Cluster head energy costs (receive + aggregate + transmit to BS)
+        for &ch_id in selected_cluster_head_ids.iter() {
+            let ch_node = &mut simulator.nodes[ch_id];
+
+            if !ch_node.is_alive {
                 continue;
             }
-            let k = sim.wsn[ch_id].cluster_members.len() as f32;
-            sim.wsn[ch_id].res_energy -= (receive_energy(PACKET_SIZE) + aggregation_energy(PACKET_SIZE)) * k;
-            sim.wsn[ch_id].res_energy -= transmission_energy(PACKET_SIZE,sim.wsn[ch_id].distance_to_sink)
-        }
 
+            let member_count = ch_node.cluster_member_ids.len() as f32;
+
+            // Receive + aggregate data from all members
+            ch_node.remaining_energy_j -=
+                (calculate_receive_energy(DATA_PACKET_SIZE_BITS)
+                    + calculate_aggregation_energy(DATA_PACKET_SIZE_BITS))
+                    * member_count;
+
+            // Transmit one aggregated packet to the base station
+            ch_node.remaining_energy_j -= calculate_transmit_energy(
+                DATA_PACKET_SIZE_BITS,
+                ch_node.distance_to_base_station_m,
+            );
+        }
     }
-
 }
