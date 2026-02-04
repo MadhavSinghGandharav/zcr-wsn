@@ -11,6 +11,7 @@ pub trait Protocol {
 
     /// Human-readable name of the protocol (used in logs/UI/etc.).
     fn name(&self) -> &'static str;
+
 }
 
 /// Central simulation state — holds the network and current round information.

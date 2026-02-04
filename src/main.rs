@@ -1,10 +1,13 @@
+use std::io::{BufWriter,Write};
+use std::fs::File;
+
 use zcr_wsn::config::{
     DEPLOYMENT_AREA_WIDTH_M,
     DEPLOYMENT_AREA_HEIGHT_M,
     CLUSTER_HEAD_PROBABILITY,
     TOTAL_SENSOR_NODES,
 };
-use zcr_wsn::zcr::Zcr;
+use zcr_wsn::leach::Leach;
 use zcr_wsn::simulator::Simulator;
 use macroquad::prelude::*;
 
@@ -31,8 +34,12 @@ async fn main() {
     );
 
     // Create LEACH protocol instance with desired CH probability
-    let mut protocol = Zcr::new(CLUSTER_HEAD_PROBABILITY);
+    let mut protocol = Leach::new(CLUSTER_HEAD_PROBABILITY);
 
+    // File creation 
+    let file: File = std::fs::File::create("../leach.csv").unwrap();
+    let mut writer: BufWriter<File> = BufWriter::new(file);
+    
     // Accumulator for fixed-time-step simulation loop
     let mut time_accumulator = 0.0;
 
@@ -46,11 +53,15 @@ async fn main() {
         // Catch up simulation with fixed timestep (multiple updates possible per frame)
         while time_accumulator >= fixed_timestep {
             simulator.update(&mut protocol);
+            for node in simulator.nodes.iter(){
+                writeln!(writer,"{},{},{}",simulator.current_round,simulator.alive_node_count,node.remaining_energy_j).unwrap();
+            }
+
             time_accumulator -= fixed_timestep;
         }
 
         // Rendering
-        clear_background(BLACK);
+        clear_background(Color::from_rgba(29, 32, 33, 255));
         simulator.render();
 
         next_frame().await;
